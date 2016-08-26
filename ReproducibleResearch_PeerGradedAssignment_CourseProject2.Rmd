@@ -1,0 +1,280 @@
+---
+title: 'Reproducible Research: Peer Graded Assignment - Course Project 2'
+author: "Christian Frei"
+date: "26 August 2016"
+output: html_document
+---
+
+# Reproducible Research: Peer Graded Assignment - Course Project 2
+## Synopsis
+This study examines the correlation between severe weather events and the level of damage they cause to property and lives. The data basis for this analysis comes from the U.S. National Oceanic and Atmospheric Administration’s (NOAA) storm database, which contains details of severe weather incidents including the type of incident, the time it occurred, the number of human injuries/fatalities and the monetary level of damage to property and crops between January 1950 and March 2016.
+
+## Goal
+The basic goal of this analysis is to explore the NOAA Storm Database and answer two questions concerning severe weather events:
+
+* Which severe weather events (EVTYPE) are most harmful with respect to population health?
+* Which severe weather events have the greatest economic consequences?
+
+## NOAA Storm Database
+The data for this assignment come in the form of a comma-separated-value file compressed via the bzip2 algorithm to reduce its size. You can download the file from the course web site:
+
+[Storm Data](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2) [47MB]
+
+There is also some documentation of the database available. Here you will find how some of the variables are constructed/defined.
+
+* National Weather Service [Storm Data Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf)
+* National Climatic Data Center Storm Events [FAQ](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf)
+
+The events in the database start in the year 1950 and end in November 2011. In the earlier years of the database there are generally fewer events recorded, most likely due to a lack of good records. More recent years should be considered more complete.
+
+---
+
+## Libraries and Option
+For this analysis on the basis of R, 2 libraries are needed:
+* ggplot2
+* reshape
+
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+library("ggplot2")
+library("reshape")
+library('scales')
+options(scipen=999)
+```
+
+## Data Analysis
+### Download Storm Data "StormData.csv.bz2", extract and load CSV file
+First steps of data preparation is to download, extract and load data in to R.
+
+``` {r echo=TRUE}
+# Init variables about zipfilename and fileURL
+zipFileName <- "StormData.csv.bz2"
+fileURL <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+
+# If file isn't stored, it will be downloaded.
+if (!file.exists(zipFileName)){
+  download.file(fileURL, zipFileName, method="curl")
+}  
+
+# Load CSV file
+data <- read.csv(zipFileName, stringsAsFactors = FALSE)
+```
+
+### Data Preparation
+After data is loaded in R, next step is preparing data for the analysis.
+
+#### Time
+The recoreded serve weather events starts from January 1950 and ends at March 2016, but the coverage of recoreded events has changed over time:
+* Jan 1950 - Jan 1955 - Tornado
+* Jan 1955 - Jan 1966 - Tornado, Thunderstorm, Wind, and Hail
+* Jan 1966 - Mar 2016 - All Event Types
+
+Therefore data from Jan 1966 or later are kept for this analysis.
+
+Futher details may be found [here](http://www.ncdc.noaa.gov/stormevents/details.jsp).
+
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+# Convert the date from factor to to a date field.
+data$BGN_DATE <- as.Date(data$BGN_DATE, format = "%m/%d/%Y")
+
+# Data as of January 1, 1966 is only taken for this analysis.
+data <- subset(data, BGN_DATE >= as.Date("1966-01-01"))
+```
+
+#### Columns
+Due to the large size of columns, only necessary columns are kept for this analysis.
+
+* BGN_DATE - Event Begin Date
+* EVTYPE - Event Type
+* FATALITIES - Number of reported fatalities caused by the event.
+* INJURIES - Number of reported injuries caused by the event.
+* PROPDMG/PROPDMGEXP - The dollar (USD) amount of property damage caused by the event.
+* CROPDMG/CROPDMGEXP - The dollar (USD) amount of crop damage caused by the event.
+
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+# Necessary columns for the analysis which are kept for this analysis.
+neededCols <- c("BGN_DATE",
+                  "EVTYPE",
+                  "FATALITIES",
+                  "INJURIES",
+                  "PROPDMG",
+                  "PROPDMGEXP",
+                  "CROPDMG",
+                  "CROPDMGEXP")
+
+# Take only cols and rows which are needed for this analysis.
+data <- subset(data,
+               select = neededCols,
+               (grepl(EVTYPE, pattern = "*Summary*", ignore.case = TRUE) == FALSE))
+```
+
+Adjustment of Several Event Type Names
+According to Storm Data [Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf)(page 6), names must be written out, because some are represented in more than one name, such as “TSTM WIND” and “THUNDERSTORM WIND”.
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+data[data$EVTYPE == "TSTM WIND", ]$EVTYPE = "THUNDERSTORM WIND"
+data[data$EVTYPE == "THUNDERSTORM WINDS", ]$EVTYPE = "THUNDERSTORM WIND"
+data[data$EVTYPE == "RIVER FLOOD", ]$EVTYPE = "FLOOD"
+data[data$EVTYPE == "HURRICANE/TYPHOON", ]$EVTYPE = "HURRICANE-TYPHOON"
+data[data$EVTYPE == "HURRICANE", ]$EVTYPE = "HURRICANE-TYPHOON"
+```
+---
+
+### Conversion of Damage Amounts
+The damage amounts are stored in the data as a pair of columns. One is the "DMG" amount (PROPDMG/CROPDMG). The other is "DMGEXP"" which is the dimension to apply a magnitude to the amount (PROPDMGEXP/CROPDMGEXP). e.g. DMG x 10 ^ DMGEXP
+
+The distinct exponent symbols are identified so that they may be quantified individually.
+
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+# Create a dictanry for lookup exponents.
+exponentLookup <- data.frame(DMGEXP = c("",
+                                        "-",
+                                        "?",
+                                        "+",
+                                        "0",
+                                        "1",
+                                        "2",
+                                        "3",
+                                        "4",
+                                        "5",
+                                        "6",
+                                        "7",
+                                        "8",
+                                        "B",
+                                        "H",
+                                        "K",
+                                        "M"
+                                        ),
+                             EXP = c(1,          #            
+                                     1,          # -
+                                     1,          # ?
+                                     1,          # +
+                                     1,          # 0
+                                     10,         # 1
+                                     100,        # 2
+                                     1000,       # 3
+                                     10000,      # 4
+                                     100000,     # 5
+                                     1000000,    # 6
+                                     10000000,   # 7
+                                     100000000,  # 8
+                                     1000000000, # B
+                                     100,        # H
+                                     1000,       # K
+                                     1000000     # M
+                                    ),
+                             stringsAsFactors = FALSE
+                             )
+
+# If DMGEXP has small letters convert them into capital letters
+data$PROPDMGEXP <- toupper(data$PROPDMGEXP)
+data$CROPDMGEXP <- toupper(data$CROPDMGEXP)
+
+# Merge the power of exponents for use with property damage amounts.
+data <- merge(x = data, y = exponentLookup,
+                by.x = "PROPDMGEXP", by.y = "DMGEXP",
+                all.x = TRUE)
+names(data)[names(data)== "EXP"] <- "PROPEXP"
+
+data <- merge(x = data, y = exponentLookup,
+                by.x = "CROPDMGEXP", by.y = "DMGEXP",
+                all.x = TRUE)
+names(data)[names(data)== "EXP"] <- "CROPEXP"
+
+# Apply the power of to the damage amounts
+data$PropDamageAmount <- data$PROPDMG * data$PROPEX
+data$CropDamageAmount <- data$CROPDMG  * data$CROPEXP
+```
+
+### Clean Texts of Event Type (EVTYPE)
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+# A general function "clean" of modifications to apply to all event type values.
+clean <- function(x) {
+  x <- toupper(x) # use consistent casing
+  x <- sub("\\\\", " ", x) # eliminate \'s
+  x <- sub("-", " ", x) # eliminate -'s
+  x <- sub("/", " ", x) # eliminate /'s
+  x <- gsub("\\s+", " ", x) # compress multiple spaces
+  x <- trimws(x) # trim leading and trailing whitespace
+}
+
+data$EVTYPE <- apply(data.frame(data$EVTYPE), 2, clean)
+```
+
+## Analysis
+###Population Health
+The top 5 weather events, which have an impact to fatalities and injuries, will be ranked.
+
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+# Top 5 Severe Weather Events for Fatality
+fatalityTop5 <- aggregate(list(Freq=data$FATALITIES),
+                              list(EventType=data$EVTYPE),
+                              sum)
+fatalityTop5 <- head(fatalityTop5[order(-fatalityTop5$Freq),], n=5)
+
+# Top 5 Severe Weather Events for Injury
+injuryTop5 <- aggregate(list(Freq=data$INJURIES),
+                            list(EventType=data$EVTYPE),
+                            sum)
+injuryTop5 <- head(injuryTop5[order(-injuryTop5$Freq),], n=5)
+```
+
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+ggplot(data=fatalityTop5, aes(x=reorder(EventType, Freq), y=Freq)) + 
+    geom_bar(stat="identity") +
+    ggtitle(label = "Top 5 Severe Weather Events with the Highest Total Fatalities") + 
+    labs(x = "Event Type", y = "Count") +
+    coord_flip()
+```
+
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+ggplot(data=injuryTop5, aes(x=reorder(EventType, Freq), y=Freq)) + 
+    geom_bar(stat="identity") +
+    ggtitle(label = "Top 5 Severe Weather Events with the Highest Total Injuries") + 
+    labs(x = "Event Type", y = "Count") +
+    coord_flip()
+```
+
+Tornados has at fatalities and injuries the highest number.
+
+### Economic Consequences
+To analyze the top contributing weather events by total cost of damage, the total of both damage amounts (property and crop) will be calculated and ranked.
+
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+# Calculte the costs of damage for property and for crop.
+PropertyDamageTop5 <- aggregate(
+                               list(PropDamageAmount=data$PropDamageAmount,
+                                    CropDamageAmount=data$CropDamageAmount),
+                               list(EVTYPE=data$EVTYPE),
+                               sum)
+
+# Calculate the total costs
+PropertyDamageTop5$TotalDamageAmount <- PropertyDamageTop5$PropDamageAmount + PropertyDamageTop5$CropDamageAmount
+
+# Top 5 Contributing Severe Weather Events for Total Economic Damage
+PropertyDamageTop5 <- PropertyDamageTop5[order(-PropertyDamageTop5$TotalDamageAmount),]
+PropertyDamageTop5 <- head(PropertyDamageTop5, n=5)
+
+# Reorganize PropertyDamageTop5 to 3 columns EVTYPE, variable, value
+PropertyDamageTop5 <- melt(PropertyDamageTop5[,-4])
+names(PropertyDamageTop5)[names(PropertyDamageTop5) == "variable"] <- "TypOfDamage"
+names(PropertyDamageTop5)[names(PropertyDamageTop5) == "value"] <- "Amount"
+
+# Rename PropDamageAmount and CropDamageAmount
+levels(PropertyDamageTop5$TypOfDamage)[levels(PropertyDamageTop5$TypOfDamage) == "PropDamageAmount"] <- "Property Damage Amount"
+levels(PropertyDamageTop5$TypOfDamage)[levels(PropertyDamageTop5$TypOfDamage) == "CropDamageAmount"] <- "Crop Damage Amount"
+```
+
+
+``` {r echo=TRUE, message=FALSE, warning=FALSE}
+ggplot(data=PropertyDamageTop5, 
+      aes(x=reorder(EVTYPE, Amount), y=Amount, fill=TypOfDamage)) + 
+      scale_fill_grey(start = 0, end = 0.9) + 
+      theme(legend.position="bottom") +
+      guides(fill=guide_legend(title=NULL)) + 
+      geom_bar(stat="identity", colour="black") +
+      ggtitle(label = "Top 5 Severe Weather Events with the Highest Economic Damage") + 
+      labs(x = "Event Type", y = "Amount of Damage in USD") + 
+      scale_y_continuous(labels = dollar) + 
+      coord_flip()
+```
+
+Floods are the highest contributor economic loss. It is doubled of hurricane typhoon ,which is 2nd. Tornados, which is the highest contributor for fatalities and injuries, is just 3rd ranking event to economic damage. For these severe weather event types, costs for property damage is much higher than for crops damage.
